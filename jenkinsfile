@@ -1,80 +1,55 @@
 pipeline {
     agent any
+
     environment {
-        DO_API_TOKEN = credentials('digitalocean-api-token') // Ensure you have this credential set in Jenkins
-        SSH_KEY_PATH = '/home/ahmed/.ssh/my-key' // Update this to your SSH key path
-        INVENTORY_FILE = '/home/ahmed/Desktop/final project/final_project_digitalocean/final-project-digitalocean/inventory.ini' // Path to your inventory file
-        DROPLET_NAME = 'my-droplet' // Name of the droplet to check
+        // Load your credentials
+        DIGITALOCEAN_API_TOKEN = credentials('digitalocean_token')
     }
-    
+
     stages {
-        stage('Clone Repository') {
+        stage('Checkout') {
             steps {
-                script {
-                    git 'https://github.com/Ahmed3019/final-project-digitalocean.git'
-                }
+                checkout scm
             }
         }
-        
-        stage('Check for Existing Droplet') {
+
+        stage('Check Infrastructure') {
             steps {
                 script {
-                    def response = sh(script: "curl -X GET -H 'Authorization: Bearer ${DO_API_TOKEN}' 'https://api.digitalocean.com/v2/droplets'", returnStdout: true)
-                    def json = readJSON(text: response)
-
-                    def existingDroplet = json.droplets.find { droplet -> droplet.name == DROPLET_NAME }
-                    if (existingDroplet) {
-                        env.DROPLET_IP = existingDroplet.networks.v4[0].ip_address // Extract the public IP
-                        echo "Existing droplet found with IP: ${env.DROPLET_IP}"
+                    // Check if the infrastructure already exists
+                    def exists = sh(script: "terraform state list | grep 'aws_instance'", returnStatus: true) == 0
+                    if (exists) {
+                        echo "Infrastructure already exists. Skipping creation."
                     } else {
-                        echo "No existing droplet found. Proceeding to create a new one."
+                        echo "Infrastructure does not exist. Proceeding to create."
+                        sh 'terraform init'
+                        sh "terraform apply -auto-approve -var 'do_token=${DIGITALOCEAN_API_TOKEN}'"
                     }
                 }
             }
         }
-        
-        stage('Create Droplet') {
-            when {
-                expression { !env.DROPLET_IP } // Only create if no existing droplet is found
-            }
+
+        stage('Create Inventory') {
             steps {
                 script {
-                    def response = sh(script: "curl -X POST -H 'Content-Type: application/json' -H 'Authorization: Bearer ${DO_API_TOKEN}' -d '{\"name\":\"${DROPLET_NAME}\",\"region\":\"nyc3\",\"size\":\"s-1vcpu-1gb\",\"image\":\"ubuntu-20-04-x64\"}' 'https://api.digitalocean.com/v2/droplets'", returnStdout: true)
-                    def json = readJSON(text: response)
-                    env.DROPLET_IP = json.droplet.networks.v4[0].ip_address // Extract the public IP
-                    echo "New droplet created with IP: ${env.DROPLET_IP}"
+                    def dropletIp = sh(script: "terraform output -raw droplet_ip", returnStdout: true).trim()
+                    writeFile file: 'inventory', text: "[web]\n${dropletIp} ansible_ssh_private_key_file=/path/to/your/key"
                 }
             }
         }
-        
-        stage('Create Inventory File') {
-            steps {
-                script {
-                    def inventoryContent = """
-                    [web]
-                    ${env.DROPLET_IP} ansible_ssh_private_key_file=${SSH_KEY_PATH}
-                    """
-                    writeFile file: INVENTORY_FILE, text: inventoryContent
-                    echo "Inventory file created at: ${INVENTORY_FILE}"
-                }
-            }
-        }
-        
+
         stage('Run Ansible Playbook') {
             steps {
                 script {
-                    sh "ansible-playbook -i ${INVENTORY_FILE} your-playbook.yml" // Replace with your actual playbook name
+                    sh 'ansible-playbook -i inventory playbook.yml'
                 }
             }
         }
-        
-        stage('Notify') {
-            steps {
-                script {
-                    // Send email or notify about the pipeline completion
-                    echo "Pipeline completed. Droplet IP: ${env.DROPLET_IP}"
-                }
-            }
+    }
+
+    post {
+        always {
+            echo "Pipeline finished."
         }
     }
 }
