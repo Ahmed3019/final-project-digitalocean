@@ -1,24 +1,38 @@
 pipeline {
     agent any
+
     environment {
-        DO_TOKEN = credentials('digitalocean_token') // DigitalOcean token
+        DO_TOKEN = credentials('digitalocean_token')
+        GITHUB_REPO = 'https://github.com/Ahmed3019/final-project-digitalocean'
+        PROJECT_PATH = '/home/ahmed/Desktop/final project/final_project_digitalocean/final-project-digitalocean'
+        TERRAFORM_PATH = "${PROJECT_PATH}/terraform"
+        ANSIBLE_INVENTORY = 'inventory.ini'
+        ANSIBLE_PLAYBOOK = 'setup.yaml'
     }
+
     stages {
+        stage('Checkout SCM') {
+            steps {
+                git url: "${GITHUB_REPO}", branch: 'main', credentialsId: 'github-cred'
+            }
+        }
+
         stage('Terraform Check & Apply') {
             steps {
                 script {
-                    // Check if the infrastructure is already built
-                    def infrastructureExists = sh(script: 'terraform show -json | jq -r ".resources | length > 0"', returnStdout: true).trim()
-
-                    if (infrastructureExists == 'true') {
-                        echo 'Infrastructure already exists. Skipping Terraform apply.'
-                    } else {
-                        echo 'Infrastructure does not exist. Applying Terraform configuration...'
-                        sh '''
-                        export DIGITALOCEAN_TOKEN=${DO_TOKEN}
-                        terraform init
-                        terraform apply -auto-approve
-                        '''
+                    // Change to the directory containing infra.tf
+                    dir("${TERRAFORM_PATH}") {
+                        // Check if the infrastructure exists
+                        def infrastructureExists = sh(script: 'terraform show -json | jq -r .resources | length', returnStdout: true).trim()
+                        if (infrastructureExists == "0") {
+                            echo 'Infrastructure does not exist. Applying Terraform configuration...'
+                            // Initialize Terraform
+                            sh "export DIGITALOCEAN_TOKEN=${DO_TOKEN} && terraform init"
+                            // Apply Terraform configuration
+                            sh "export DIGITALOCEAN_TOKEN=${DO_TOKEN} && terraform apply -auto-approve"
+                        } else {
+                            echo 'Infrastructure already exists. Skipping Terraform apply.'
+                        }
                     }
                 }
             }
@@ -27,17 +41,10 @@ pipeline {
         stage('Create Ansible Inventory') {
             steps {
                 script {
-                    // Capture the public IP output from Terraform
-                    def terraformOutput = sh(script: 'terraform output -raw instance_ip', returnStdout: true).trim()
-                    echo "Terraform created the droplet with IP: ${terraformOutput}"
-
-                    // Store the public IP for later use in Ansible
-                    env.DROPLET_IP = terraformOutput
-
                     // Create the inventory file
-                    writeFile file: 'inventory', text: """
+                    writeFile file: "${ANSIBLE_INVENTORY}", text: """
                     [droplet]
-                    ${env.DROPLET_IP} ansible_user=root ansible_ssh_private_key_file=/path/to/your/private/key
+                    ${env.INSTANCE_IP}
                     """
                 }
             }
@@ -46,8 +53,7 @@ pipeline {
         stage('Run Ansible Playbook') {
             steps {
                 script {
-                    // Run Ansible using the inventory file
-                    ansiblePlaybook credentialsId: 'my-key', inventory: './inventory', playbook: 'setup.yaml'
+                    ansiblePlaybook colorized: true, credentialsId: 'ansible-cred', disableHostKeyChecking: true, installation: 'ansible', inventory: "${ANSIBLE_INVENTORY}", playbook: "${ANSIBLE_PLAYBOOK}"
                 }
             }
         }
