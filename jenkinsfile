@@ -10,7 +10,9 @@ pipeline {
     stages {
         stage('Clone Repository') {
             steps {
-                git 'https://github.com/Ahmed3019/final-project-digitalocean.git'
+                script {
+                    git 'https://github.com/Ahmed3019/final-project-digitalocean.git'
+                }
             }
         }
         
@@ -20,7 +22,7 @@ pipeline {
                     def response = sh(script: "curl -X GET -H 'Authorization: Bearer ${DO_API_TOKEN}' 'https://api.digitalocean.com/v2/droplets'", returnStdout: true)
                     def json = readJSON(text: response)
 
-                    def existingDroplet = json.droplets.find { it.name == DROPLET_NAME }
+                    def existingDroplet = json.droplets.find { droplet -> droplet.name == DROPLET_NAME }
                     if (existingDroplet) {
                         env.DROPLET_IP = existingDroplet.networks.v4[0].ip_address // Extract the public IP
                         echo "Existing droplet found with IP: ${env.DROPLET_IP}"
