@@ -1,51 +1,71 @@
 pipeline {
-    agent any 
+    agent any
+
+    environment {
+        DIGITALOCEAN_TOKEN = credentials('digitalocean_token')  // Ensure you have this credential set up in Jenkins
+        GITHUB_CREDENTIALS = credentials('github-cred')          // GitHub credentials for accessing the repo
+    }
 
     stages {
-        stage('Clone Repository') {
+        stage('Checkout SCM') {
             steps {
-                git url: 'https://github.com/Ahmed3019/final-project-digitalocean.git'
+                script {
+                    // Checkout the repository
+                    checkout([$class: 'GitSCM', 
+                              branches: [[name: '*/main']], 
+                              userRemoteConfigs: [[url: 'https://github.com/Ahmed3019/final-project-digitalocean.git', credentialsId: 'GITHUB_CREDENTIALS']]
+                    ])
+                }
             }
         }
-        
+
         stage('Check Infrastructure') {
             steps {
                 script {
-                    // Change to the directory containing the Terraform files
-                    dir('final-project-digitalocean/terraform') {
-                        // Run Terraform init
+                    // Change to the terraform directory
+                    dir('terraform') {
+                        // Initialize Terraform
                         sh 'terraform init'
 
-                        // Check if infrastructure exists
+                        // Check if the infrastructure is already built
                         def output = sh(script: 'terraform output -json', returnStdout: true).trim()
-
                         if (output) {
                             echo 'Infrastructure already built.'
+                            // Extract the droplet IP and update the inventory file
+                            def json = readJSON(text: output)
+                            def dropletIP = json.droplet_ip.value  // Adjust according to your output variable name
+                            writeFile file: '../inventory.ini', text: "[digitalocean]\n${dropletIP}\n"
                         } else {
                             echo 'Building infrastructure...'
+                            // Apply Terraform configuration
                             sh 'terraform apply -auto-approve'
-                            
-                            // Get the public IP of the newly created droplet
-                            def ip = sh(script: 'terraform output public_ip', returnStdout: true).trim()
-
-                            // Update inventory.ini with the new IP
-                            writeFile file: '../inventory.ini', text: "[digitalocean]\n${ip}\n"
+                            // Get the new droplet IP and update the inventory file
+                            output = sh(script: 'terraform output -json', returnStdout: true).trim()
+                            def json = readJSON(text: output)
+                            def dropletIP = json.droplet_ip.value  // Adjust according to your output variable name
+                            writeFile file: '../inventory.ini', text: "[digitalocean]\n${dropletIP}\n"
                         }
                     }
                 }
             }
         }
-        
+
         stage('Run Ansible Playbook') {
             steps {
                 script {
-                    // Change to the directory with the playbook
-                    dir('final-project-digitalocean') {
-                        // Run the Ansible playbook
+                    // Change to the project root directory and run the Ansible playbook
+                    dir('..') {
                         sh 'ansible-playbook -i inventory.ini setup.yaml'
                     }
                 }
             }
+        }
+    }
+
+    post {
+        always {
+            echo 'Cleaning up...'
+            // Optionally, you can clean up resources or send notifications here
         }
     }
 }
