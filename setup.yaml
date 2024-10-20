@@ -1,0 +1,85 @@
+---
+- hosts: all
+  become: yes
+  tasks:
+    - name: Create directory named "final project"
+      file:
+        path: /home/{{ ansible_user }}/final_project
+        state: directory
+
+    - name: Enter the directory
+      shell: cd /home/{{ ansible_user }}/final_project
+
+    - name: Install Git
+      apt:
+        name: git
+        state: present
+        update_cache: yes
+
+    - name: Clone the repository
+      git:
+        repo: 'https://github.com/Ahmed3019/my-cv-application'
+        dest: /home/{{ ansible_user }}/final_project/my-cv-application
+
+    - name: Install Docker
+      apt:
+        name: docker.io
+        state: present
+        update_cache: yes
+
+    - name: Install Docker Compose
+      apt:
+        name: docker-compose
+        state: present
+        update_cache: yes
+
+    - name: Add user to docker group
+      user:
+        name: "{{ ansible_user }}"
+        groups: docker
+        append: yes
+
+    - name: Install Minikube
+      apt:
+        name: minikube
+        state: present
+        update_cache: yes
+
+    - name: Install kubectl
+      apt:
+        name: kubectl
+        state: present
+        update_cache: yes
+
+    - name: Pull the Docker image
+      docker_image:
+        name: ahmedsalama3014/frontend-task
+        source: pull
+
+    - name: Run Docker container on port 80
+      docker_container:
+        name: frontend-task
+        image: ahmedsalama3014/frontend-task
+        state: started
+        ports:
+          - "80:80"  # Map port 80 on the host to port 80 in the container
+
+    - name: Start Minikube
+      shell: minikube start --cpus=2 --memory=4096
+
+    - name: Create Kubernetes namespace for frontend-task
+      shell: kubectl create namespace frontend-task
+
+    - name: Deploy application to Kubernetes (deployment.yaml)
+      shell: kubectl apply -f /home/{{ ansible_user }}/final_project/deployment.yaml -n frontend-task
+
+    - name: Deploy service to Kubernetes (service.yaml)
+      shell: kubectl apply -f /home/{{ ansible_user }}/final_project/service.yaml -n frontend-task
+
+    - name: Retrieve Minikube service URL
+      shell: minikube service frontend-task --url -n frontend-task
+      register: minikube_service_url
+
+    - name: Display Minikube service URL
+      debug:
+        msg: "Access the application at {{ minikube_service_url.stdout }}"
