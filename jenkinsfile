@@ -1,8 +1,8 @@
 pipeline {
     agent any
     environment {
-        DO_API_TOKEN = credentials('digitalocean-api-token') // Assuming you've added your API token in Jenkins credentials
-        SSH_KEY_PATH = '/home/ahmed/.ssh/my-key' // Path to your private key
+        DO_API_TOKEN = credentials('digitalocean-api-token') // Ensure you have this credential set in Jenkins
+        SSH_KEY_PATH = '/home/ahmed/.ssh/my-key' // Update this to your SSH key path
         INVENTORY_FILE = '/home/ahmed/Desktop/final project/final_project_digitalocean/final-project-digitalocean/inventory.ini' // Path to your inventory file
         DROPLET_NAME = 'my-droplet' // Name of the droplet to check
     }
@@ -35,7 +35,7 @@ pipeline {
         
         stage('Create Droplet') {
             when {
-                expression { !env.DROPLET_IP }
+                expression { !env.DROPLET_IP } // Only create if no existing droplet is found
             }
             steps {
                 script {
@@ -64,14 +64,6 @@ pipeline {
             steps {
                 script {
                     sh "ansible-playbook -i ${INVENTORY_FILE} your-playbook.yml" // Replace with your actual playbook name
-                }
-            }
-        }
-        
-        stage('Clean Up') {
-            steps {
-                script {
-                    // Optionally, delete the droplet here if needed
                 }
             }
         }
