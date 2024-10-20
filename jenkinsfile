@@ -1,0 +1,55 @@
+pipeline {
+    agent any
+    environment {
+        DO_TOKEN = credentials('digitalocean_token') // DigitalOcean token
+    }
+    stages {
+        stage('Terraform Check & Apply') {
+            steps {
+                script {
+                    // Check if the infrastructure is already built
+                    def infrastructureExists = sh(script: 'terraform show -json | jq -r ".resources | length > 0"', returnStdout: true).trim()
+
+                    if (infrastructureExists == 'true') {
+                        echo 'Infrastructure already exists. Skipping Terraform apply.'
+                    } else {
+                        echo 'Infrastructure does not exist. Applying Terraform configuration...'
+                        sh '''
+                        export DIGITALOCEAN_TOKEN=${DO_TOKEN}
+                        terraform init
+                        terraform apply -auto-approve
+                        '''
+                    }
+                }
+            }
+        }
+
+        stage('Create Ansible Inventory') {
+            steps {
+                script {
+                    // Capture the public IP output from Terraform
+                    def terraformOutput = sh(script: 'terraform output -raw instance_ip', returnStdout: true).trim()
+                    echo "Terraform created the droplet with IP: ${terraformOutput}"
+
+                    // Store the public IP for later use in Ansible
+                    env.DROPLET_IP = terraformOutput
+
+                    // Create the inventory file
+                    writeFile file: 'inventory', text: """
+                    [droplet]
+                    ${env.DROPLET_IP} ansible_user=root ansible_ssh_private_key_file=/path/to/your/private/key
+                    """
+                }
+            }
+        }
+
+        stage('Run Ansible Playbook') {
+            steps {
+                script {
+                    // Run Ansible using the inventory file
+                    ansiblePlaybook credentialsId: 'my-key', inventory: './inventory', playbook: 'setup.yaml'
+                }
+            }
+        }
+    }
+}
