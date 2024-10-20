@@ -1,49 +1,51 @@
 pipeline {
-    agent any
-    environment {
-        DIGITALOCEAN_API_TOKEN = credentials('digitalocean_token')
-    }
+    agent any 
+
     stages {
-        stage('Checkout SCM') {
+        stage('Clone Repository') {
             steps {
-                git 'https://github.com/Ahmed3019/final-project-digitalocean.git'
+                git url: 'https://github.com/Ahmed3019/final-project-digitalocean.git'
             }
         }
+        
         stage('Check Infrastructure') {
             steps {
                 script {
-                    // Check if the infrastructure is built by running a Terraform command
-                    def result = sh(script: 'terraform output -json', returnStatus: true, dir: 'terraform')
-                    if (result == 0) {
-                        echo "Infrastructure already built."
-                    } else {
-                        echo "Building infrastructure..."
-                        // Run Terraform to create infrastructure
-                        sh 'terraform init && terraform apply -auto-approve' dir: 'terraform'
+                    // Change to the directory containing the Terraform files
+                    dir('final-project-digitalocean/terraform') {
+                        // Run Terraform init
+                        sh 'terraform init'
+
+                        // Check if infrastructure exists
+                        def output = sh(script: 'terraform output -json', returnStdout: true).trim()
+
+                        if (output) {
+                            echo 'Infrastructure already built.'
+                        } else {
+                            echo 'Building infrastructure...'
+                            sh 'terraform apply -auto-approve'
+                            
+                            // Get the public IP of the newly created droplet
+                            def ip = sh(script: 'terraform output public_ip', returnStdout: true).trim()
+
+                            // Update inventory.ini with the new IP
+                            writeFile file: '../inventory.ini', text: "[digitalocean]\n${ip}\n"
+                        }
                     }
                 }
             }
         }
-        stage('Update Inventory') {
-            steps {
-                script {
-                    // Get the generated IP address from Terraform output
-                    def ipAddress = sh(script: 'terraform output -json | jq -r .droplet_ip.value', returnStdout: true, dir: 'terraform').trim()
-                    // Update the inventory.ini file with the new IP address
-                    writeFile file: 'inventory.ini', text: "[droplets]\n${ipAddress} ansible_ssh_private_key_file=/path/to/your/private/key\n"
-                }
-            }
-        }
+        
         stage('Run Ansible Playbook') {
             steps {
-                // Run the Ansible playbook using the updated inventory
-                sh 'ansible-playbook -i inventory.ini setup.yaml'
+                script {
+                    // Change to the directory with the playbook
+                    dir('final-project-digitalocean') {
+                        // Run the Ansible playbook
+                        sh 'ansible-playbook -i inventory.ini setup.yaml'
+                    }
+                }
             }
-        }
-    }
-    post {
-        always {
-            echo "Pipeline finished."
         }
     }
 }
