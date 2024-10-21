@@ -1,38 +1,29 @@
 pipeline {
     agent any
 
+    environment {
+        DIGITALOCEAN_TOKEN = credentials('digitalocean_token')  // Use Jenkins credentials for the token
+        INVENTORY_FILE = 'inventory.ini'  // Define the inventory file name
+    }
+
     stages {
-        stage('Clone Repository') {
+        stage('Checkout Repository') {
             steps {
-                git credentialsId: 'github-cred', url: 'https://github.com/Ahmed3019/final-project-digitalocean.git'
+                git branch: 'main', url: 'https://github.com/Ahmed3019/final-project-digitalocean.git'
             }
         }
 
         stage('Check Infrastructure') {
             steps {
                 script {
-                    // Check if the droplet already exists
-                    def dropletCheck = sh(script: "doctl compute droplet list --format ID --no-header --region fra1", returnStdout: true).trim()
-                    
-                    if (dropletCheck) {
-                        echo 'Infrastructure already exists. Skipping creation.'
-                        env.INFRA_EXISTS = 'true'
-                    } else {
-                        echo 'Infrastructure does not exist. Proceeding with creation.'
-                        env.INFRA_EXISTS = 'false'
-                    }
-                }
-            }
-        }
+                    // Check if the droplet exists
+                    def dropletExists = sh(script: "doctl compute droplet list --format ID --no-header", returnStdout: true).trim()
 
-        stage('Build Infrastructure') {
-            when {
-                expression { env.INFRA_EXISTS == 'false' }
-            }
-            steps {
-                script {
-                    // Run Terraform commands
-                    dir('terraform') {
+                    if (dropletExists) {
+                        echo 'Droplet exists. Proceeding to run Ansible playbook...'
+                    } else {
+                        echo 'Droplet does not exist. Running Terraform to create infrastructure...'
+                        // Run Terraform commands to initialize and apply
                         sh 'terraform init'
                         sh 'terraform apply -auto-approve'
                     }
@@ -40,37 +31,31 @@ pipeline {
             }
         }
 
-        stage('Generate Inventory') {
+        stage('Generate Inventory File') {
             steps {
                 script {
                     // Get the public IP of the droplet
                     def dropletIP = sh(script: "doctl compute droplet list --format PublicIPv4 --no-header --region fra1", returnStdout: true).trim()
-                    
-                    // Create inventory.ini file
-                    writeFile file: 'inventory.ini', text: "[webserver]\n${dropletIP}\n"
-                    echo "Inventory file created with IP: ${dropletIP}"
+
+                    // Create the inventory file with the droplet IP
+                    writeFile(file: "${INVENTORY_FILE}", text: "[my_droplet]\n${dropletIP}")
                 }
             }
         }
 
         stage('Run Ansible Playbook') {
             steps {
-                script {
-                    // Run Ansible playbook
-                    sh 'ansible-playbook -i inventory.ini setup.yaml'
-                }
+                // Run the Ansible playbook
+                sh 'ansible-playbook -i ${INVENTORY_FILE} setup.yaml'
             }
         }
     }
 
     post {
         always {
-            script {
-                // Display the droplet IP and SSH command
-                def dropletIP = sh(script: "doctl compute droplet list --format PublicIPv4 --no-header --region fra1", returnStdout: true).trim()
-                echo "Droplet IP: ${dropletIP}"
-                echo "SSH Command: ssh -i ~/.ssh/my-key root@${dropletIP}"
-            }
+            echo 'Pipeline finished.'
+            // Clean up by removing the inventory file if necessary
+            sh "rm -f ${INVENTORY_FILE}"
         }
     }
 }
