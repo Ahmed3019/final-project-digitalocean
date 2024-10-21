@@ -1,28 +1,30 @@
 pipeline {
     agent any
     environment {
-        DIGITALOCEAN_TOKEN = credentials('digitalocean_token')  // Ensure this matches your Jenkins credential ID
+        DIGITALOCEAN_TOKEN = credentials('digitalocean_token')
     }
     stages {
         stage('Clone Project') {
             steps {
-                git branch: 'main', url: 'https://github.com/Ahmed3019/final-project-digitalocean.git', credentialsId: 'github-cred'
+                git credentialsId: 'github-cred', url: 'https://github.com/Ahmed3019/final-project-digitalocean.git'
             }
         }
         stage('Check Infrastructure') {
             steps {
                 dir('terraform') {
                     script {
-                        // Check if the infrastructure is already created by checking the state file
-                        def terraformInit = sh(script: 'terraform init -no-color', returnStatus: true)
-                        def terraformPlan = sh(script: 'terraform plan -no-color -var "digitalocean_token=$DIGITALOCEAN_TOKEN"', returnStatus: true)
-                        
-                        if (terraformPlan == 0) {
-                            echo "Infrastructure is already built."
-                        } else {
-                            echo "Infrastructure is not built yet, running terraform apply."
-                            sh 'terraform apply -auto-approve -no-color -var "digitalocean_token=$DIGITALOCEAN_TOKEN"'
-                        }
+                        sh 'terraform init -no-color'
+                        sh 'terraform plan -no-color -var digitalocean_token=${DIGITALOCEAN_TOKEN}'
+                    }
+                }
+            }
+        }
+        stage('Apply Infrastructure if Needed') {
+            steps {
+                dir('terraform') {
+                    script {
+                        // Check if the droplet is already created, otherwise apply the changes
+                        sh 'terraform apply -auto-approve -no-color -var digitalocean_token=${DIGITALOCEAN_TOKEN}'
                     }
                 }
             }
@@ -31,24 +33,36 @@ pipeline {
             steps {
                 dir('terraform') {
                     script {
-                        def instance_ip = sh(script: 'terraform output instance_ip', returnStdout: true).trim()
-                        writeFile file: 'droplet_ip.txt', text: instance_ip
-                        echo "Droplet IP is: ${instance_ip}"
+                        // Refresh the state to ensure outputs are available
+                        sh 'terraform refresh -no-color'
+                        // Capture the IP of the droplet
+                        def dropletIp = sh(script: 'terraform output -no-color instance_ip', returnStdout: true).trim()
+                        writeFile file: 'inventory.ini', text: "[droplet]\n${dropletIp} ansible_ssh_user=root ansible_ssh_private_key_file=/home/ahmed/.ssh/id_rsa"
+                        echo "Droplet IP is: ${dropletIp}"
+                    }
+                }
+            }
+        }
+        stage('Run Ansible Playbook') {
+            steps {
+                dir('ansible') {
+                    script {
+                        // Assuming the playbook is located in the ansible directory
+                        sh 'ansible-playbook -i ../terraform/inventory.ini setup.yaml'
                     }
                 }
             }
         }
     }
     post {
-        always {
+        success {
             script {
-                try {
-                    def droplet_ip = readFile('droplet_ip.txt').trim()
-                    echo "Droplet IP captured: ${droplet_ip}"
-                } catch (Exception e) {
-                    echo "Droplet IP could not be captured due to earlier failure."
-                }
+                def dropletIp = readFile('terraform/inventory.ini').trim()
+                echo "Pipeline completed successfully! Droplet IP: ${dropletIp}"
             }
+        }
+        failure {
+            echo "Pipeline failed."
         }
     }
 }
