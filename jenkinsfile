@@ -43,22 +43,12 @@ pipeline {
                 }
             }
         }
-        stage('Run Ansible Playbook') {
-            steps {
-                dir('ansible') {
-                    script {
-                        // Assuming the playbook is located in the ansible directory
-                        sh 'ansible-playbook -i ../terraform/inventory.ini setup.yaml'
-                    }
-                }
-            }
-        }
     }
     post {
         success {
             script {
                 def dropletIp = readFile('terraform/inventory.ini').trim()
-                echo "Pipeline completed successfully! Droplet IP: ${dropletIp}"
+                echo "Infrastructure check completed successfully! Droplet IP: ${dropletIp}"
             }
         }
         failure {
