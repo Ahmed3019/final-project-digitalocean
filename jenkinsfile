@@ -13,8 +13,8 @@ pipeline {
         }
 
         stage('Check if Infrastructure is Built') {
-            dir('terraform') {
-                steps {
+            steps {
+                dir('terraform') {
                     script {
                         def isBuilt = sh(script: 'terraform output -json | jq .infrastructure_built', returnStdout: true).trim()
                         if (isBuilt != 'true') {
@@ -29,8 +29,8 @@ pipeline {
         }
 
         stage('Generate IP and Update Inventory') {
-            dir('terraform') {
-                steps {
+            steps {
+                dir('terraform') {
                     script {
                         def dropletIP = sh(script: 'terraform output -json | jq -r .instance_ip.value', returnStdout: true).trim()
                         if (dropletIP) {
