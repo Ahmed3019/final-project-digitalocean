@@ -1,39 +1,16 @@
 pipeline {
     agent any
 
-    environment {
-        DIGITALOCEAN_TOKEN = credentials('digitalocean_token')
-        GITHUB_CREDENTIALS = credentials('github-cred')
-    }
-
     stages {
-        stage('Checkout SCM') {
-            steps {
-                script {
-                    echo 'Checking out the source code...'
-                    checkout scm
-                }
-            }
-        }
-        
         stage('Clone Project from GitHub') {
             steps {
-                script {
-                    echo 'Cloning the project from GitHub...'
-                    // Ensure credentials are used here
-                    withCredentials([usernamePassword(credentialsId: 'github-cred', usernameVariable: 'GIT_USERNAME', passwordVariable: 'GIT_PASSWORD')]) {
-                        sh """
-                        git clone https://github.com/Ahmed3019/final-project-digitalocean.git
-                        """
-                    }
-                }
+                checkout scm
             }
         }
 
         stage('List Workspace Files') {
             steps {
                 script {
-                    echo 'Listing files in the workspace...'
                     sh 'ls -al'
                 }
             }
@@ -43,13 +20,33 @@ pipeline {
             steps {
                 dir('terraform') {
                     script {
-                        echo 'Checking if infrastructure is built...'
-                        sh 'terraform init'
-                        def result = sh(script: 'terraform apply -auto-approve -var digitalocean_token=${DIGITALOCEAN_TOKEN}', returnStatus: true)
-                        if (result != 0) {
-                            error "Terraform apply failed. Please check the logs."
+                        def output = sh(script: 'terraform output -json', returnStdout: true).trim()
+                        def infrastructureBuilt = sh(script: 'echo $output | jq .infrastructure_built', returnStdout: true).trim()
+
+                        if (infrastructureBuilt == "false") {
+                            echo "Infrastructure not built. Proceeding to build..."
+                            sh 'terraform init'
+                            sh 'terraform apply -auto-approve -var "digitalocean_token=${env.DIGITALOCEAN_TOKEN}"'
+                        } else {
+                            echo "Infrastructure already built. Skipping creation."
                         }
                     }
+                }
+            }
+        }
+
+        stage('Generate IP and Update Inventory') {
+            steps {
+                script {
+                    def ip = sh(script: 'terraform output -json | jq -r .droplet_ip.value', returnStdout: true).trim()
+                    echo "Droplet IP: ${ip}"
+
+                   
+
+                    // Create new inventory file
+                    writeFile file: 'inventory.ini', text: "[my_droplet]\n${ip}\n"
+
+                    echo "Updated inventory file with droplet IP."
                 }
             }
         }
@@ -57,27 +54,30 @@ pipeline {
         stage('Run Ansible Playbook') {
             steps {
                 script {
-                    echo 'Running Ansible playbook...'
-                    withCredentials([file(credentialsId: 'my-key', variable: 'SSH_KEY')]) {
-                        sh 'ansible-playbook -i inventory.ini setup.yaml'
-                    }
+                    sh 'ansible-playbook -i inventory.ini setup.yaml'
                 }
             }
         }
 
-        stage('Display IP and SSH Command') {
+        stage('Display SSH Command') {
             steps {
                 script {
-                    echo "Pipeline completed. Use the following command to SSH into your droplet:"
-                    echo "ssh -i ${SSH_KEY} root@<DROPLET_IP>"
+                    def ip = sh(script: 'terraform output -json | jq -r .droplet_ip.value', returnStdout: true).trim()
+                    echo "SSH Command to connect to the droplet:"
+                    echo "ssh -i /home/ahmed/.ssh/id_rsa root@${ip}"
                 }
             }
         }
     }
 
+    environment {
+        DIGITALOCEAN_TOKEN = credentials('digitalocean_token')
+        GITHUB_CREDENTIALS = credentials('github-cred')
+    }
+
     post {
         always {
-            echo 'Cleaning up...'
+            cleanWs()
         }
     }
 }
