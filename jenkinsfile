@@ -1,32 +1,25 @@
 pipeline {
     agent any
 
+    environment {
+        DIGITALOCEAN_TOKEN = credentials('digitalocean_token') // Add your credential here
+    }
+
     stages {
         stage('Clone Project from GitHub') {
             steps {
-                checkout scm
-            }
-        }
-
-        stage('List Workspace Files') {
-            steps {
-                script {
-                    sh 'ls -al'
-                }
+                git credentialsId: 'github-cred', url: 'https://github.com/Ahmed3019/final-project-digitalocean.git'
             }
         }
 
         stage('Check if Infrastructure is Built') {
-            steps {
-                dir('terraform') {
+            dir('terraform') {
+                steps {
                     script {
-                        def output = sh(script: 'terraform output -json', returnStdout: true).trim()
-                        def infrastructureBuilt = sh(script: 'echo $output | jq .infrastructure_built', returnStdout: true).trim()
-
-                        if (infrastructureBuilt == "false") {
-                            echo "Infrastructure not built. Proceeding to build..."
+                        def isBuilt = sh(script: 'terraform output -json | jq .infrastructure_built', returnStdout: true).trim()
+                        if (isBuilt != 'true') {
                             sh 'terraform init'
-                            sh 'terraform apply -auto-approve -var "digitalocean_token=${env.DIGITALOCEAN_TOKEN}"'
+                            sh 'terraform apply -auto-approve'
                         } else {
                             echo "Infrastructure already built. Skipping creation."
                         }
@@ -36,48 +29,38 @@ pipeline {
         }
 
         stage('Generate IP and Update Inventory') {
-            steps {
-                script {
-                    def ip = sh(script: 'terraform output -json | jq -r .droplet_ip.value', returnStdout: true).trim()
-                    echo "Droplet IP: ${ip}"
-
-                   
-
-                    // Create new inventory file
-                    writeFile file: 'inventory.ini', text: "[my_droplet]\n${ip}\n"
-
-                    echo "Updated inventory file with droplet IP."
+            dir('terraform') {
+                steps {
+                    script {
+                        def dropletIP = sh(script: 'terraform output -json | jq -r .instance_ip.value', returnStdout: true).trim()
+                        if (dropletIP) {
+                            writeFile file: 'inventory.ini', text: "[droplet]\n${dropletIP} ansible_user=root"
+                            echo "Updated inventory file with droplet IP: ${dropletIP}"
+                        } else {
+                            error "Failed to retrieve droplet IP"
+                        }
+                    }
                 }
             }
         }
 
         stage('Run Ansible Playbook') {
             steps {
-                script {
-                    sh 'ansible-playbook -i inventory.ini setup.yaml'
-                }
+                sh 'ansible-playbook -i inventory.ini setup.yaml'
             }
         }
 
         stage('Display SSH Command') {
             steps {
                 script {
-                    def ip = sh(script: 'terraform output -json | jq -r .droplet_ip.value', returnStdout: true).trim()
-                    echo "SSH Command to connect to the droplet:"
-                    echo "ssh -i /home/ahmed/.ssh/id_rsa root@${ip}"
+                    def dropletIP = sh(script: 'terraform output -json | jq -r .instance_ip.value', returnStdout: true).trim()
+                    if (dropletIP) {
+                        echo "SSH Command to connect to the droplet: ssh -i /home/ahmed/.ssh/id_rsa root@${dropletIP}"
+                    } else {
+                        error "Droplet IP not found!"
+                    }
                 }
             }
-        }
-    }
-
-    environment {
-        DIGITALOCEAN_TOKEN = credentials('digitalocean_token')
-        GITHUB_CREDENTIALS = credentials('github-cred')
-    }
-
-    post {
-        always {
-            cleanWs()
         }
     }
 }
