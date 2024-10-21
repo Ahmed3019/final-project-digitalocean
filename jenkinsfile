@@ -1,23 +1,18 @@
 pipeline {
-    agent any 
-
-    environment {
-        // Retrieve the DigitalOcean token from Jenkins credentials
-        DIGITALOCEAN_TOKEN = credentials('digitalocean_token') // Ensure 'digitalocean_token' is added to Jenkins credentials
-    }
+    agent any
 
     stages {
         stage('Clone Project from GitHub') {
             steps {
-                // Clone the GitHub repository
-                git branch: 'main', url: 'https://github.com/Ahmed3019/final-project-digitalocean.git', credentialsId: 'github-cred'
+                checkout scm
             }
         }
-        
+
         stage('List Workspace Files') {
             steps {
-                // List files in the workspace for debugging
-                sh 'ls -al'
+                script {
+                    sh 'ls -al'
+                }
             }
         }
 
@@ -25,18 +20,15 @@ pipeline {
             steps {
                 dir('terraform') {
                     script {
-                        // Check the current infrastructure state
                         def output = sh(script: 'terraform output -json', returnStdout: true).trim()
-                        echo "Terraform Output: ${output}"
+                        def infrastructureBuilt = sh(script: 'echo $output | jq .infrastructure_built', returnStdout: true).trim()
 
-                        if (output == "{}") {
+                        if (infrastructureBuilt == "false") {
                             echo "Infrastructure not built. Proceeding to build..."
-                            // Initialize Terraform
                             sh 'terraform init'
-                            // Apply Terraform configuration with the DigitalOcean token
-                            sh "terraform apply -auto-approve -var 'digitalocean_token=${DIGITALOCEAN_TOKEN}'"
+                            sh 'terraform apply -auto-approve -var "digitalocean_token=${env.DIGITALOCEAN_TOKEN}"'
                         } else {
-                            echo "Infrastructure already built."
+                            echo "Infrastructure already built. Skipping creation."
                         }
                     }
                 }
@@ -45,42 +37,46 @@ pipeline {
 
         stage('Generate IP and Update Inventory') {
             steps {
-                dir('terraform') {
-                    script {
-                        // Get the public IP of the created droplet
-                        def ipOutput = sh(script: 'terraform output -json', returnStdout: true).trim()
-                        def ipAddress = sh(script: "echo '${ipOutput}' | jq -r '.public_ip.value'", returnStdout: true).trim()
+                script {
+                    def ip = sh(script: 'terraform output -json | jq -r .droplet_ip.value', returnStdout: true).trim()
+                    echo "Droplet IP: ${ip}"
 
-                        // Update the inventory file with the new IP address
-                        sh "echo '[digitalocean]' > ../inventory.ini"
-                        sh "echo '${ipAddress}' >> ../inventory.ini"
-                        echo "Updated inventory.ini with IP: ${ipAddress}"
-                    }
+                   
+
+                    // Create new inventory file
+                    writeFile file: 'inventory.ini', text: "[my_droplet]\n${ip}\n"
+
+                    echo "Updated inventory file with droplet IP."
                 }
             }
         }
 
         stage('Run Ansible Playbook') {
             steps {
-                // Run the Ansible playbook using the updated inventory
-                sh 'ansible-playbook -i inventory.ini setup.yaml'
+                script {
+                    sh 'ansible-playbook -i inventory.ini setup.yaml'
+                }
             }
         }
 
         stage('Display SSH Command') {
             steps {
                 script {
-                    // Display the SSH command to connect to the droplet
-                    def ipAddress = sh(script: 'cat inventory.ini | tail -n 1', returnStdout: true).trim()
-                    echo "SSH command to connect: ssh root@${ipAddress} -i /path/to/your/private/key"
+                    def ip = sh(script: 'terraform output -json | jq -r .droplet_ip.value', returnStdout: true).trim()
+                    echo "SSH Command to connect to the droplet:"
+                    echo "ssh -i /home/ahmed/.ssh/id_rsa root@${ip}"
                 }
             }
         }
     }
 
+    environment {
+        DIGITALOCEAN_TOKEN = credentials('digitalocean_token')
+        GITHUB_CREDENTIALS = credentials('github-cred')
+    }
+
     post {
         always {
-            // Clean up the workspace after the build
             cleanWs()
         }
     }
