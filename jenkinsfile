@@ -19,26 +19,23 @@ pipeline {
             steps {
                 dir("${TERRAFORM_WORKDIR}") {
                     sh 'terraform init'
-                    step {
+                    script {
                         def infrastructureExists = sh(script: """
                             terraform state list | grep -q "digitalocean_vpc.my_vpc" && 
                             terraform state list | grep -q "digitalocean_droplet.my_instance" && 
                             terraform state list | grep -q "digitalocean_firewall.my_firewall"
-                            echo \$infrastructureExists
+                            echo \$?
                         """, returnStdout: true).trim()
-                    }
-                    step {
                         if (infrastructureExists == "0") {
                             echo 'Entire infrastructure exists. Skipping creation...'
-                            infrastructureCreation = false
+                            env.INFRASTRUCTURE_EXISTS = "false"
                             // Extract IPs or any other needed info for existing infrastructure
                             def instanceIp = sh(script: 'terraform output -raw instance_ip', returnStdout: true).trim()
                             env.INSTANCE_IP = instanceIp
                             echo 'Extracted Public IP: ${INSTANCE_IP}'
                         } else {
                             echo 'Not all infrastructure exists. Creating/Updating...'
-                            infrastructureCreation = true
-                            env.INFRASTRUCTURE_EXISTS = infrastructureCreation
+                            env.INFRASTRUCTURE_EXISTS = "true"
                         }
                     }
                 }
@@ -55,7 +52,7 @@ pipeline {
                         terraform apply -auto-approve \
                         -var "digitalocean_token=${DIGITALOCEAN_TOKEN}"
                     """
-                    step {
+                    script {
                         if (env.INFRASTRUCTURE_EXISTS == "true") {
                             def instanceIp = sh(script: 'terraform output -raw instance_ip', returnStdout: true).trim()
                             env.INSTANCE_IP = instanceIp
@@ -68,7 +65,7 @@ pipeline {
 
         stage('Generate/Update Inventory File') {
             steps {
-                step {
+                script {
                     // Create or update the inventory file with the droplet IP
                     writeFile(file: "${INVENTORY_FILE}", text: "[my_droplet]\n${INSTANCE_IP}\nansible_user=ubuntu\nansible_ssh_private_key_file=~/.ssh/your_ssh_key")
                 }
@@ -85,15 +82,11 @@ pipeline {
 
     post {
         always {
-            step {
-                echo 'Pipeline finished.'
-                echo "Inventory file ${INVENTORY_FILE} has been generated/updated and will be kept."
-            }
+            echo 'Pipeline finished.'
+            echo "Inventory file ${INVENTORY_FILE} has been generated/updated and will be kept."
         }
         failure {
-            step {
-                // Optional: Send notification on failure
-            }
+            // Optional: Send notification on failure
         }
     }
 }
