@@ -1,16 +1,30 @@
 pipeline {
     agent any
 
+    environment {
+        DIGITALOCEAN_TOKEN = credentials('digitalocean_token')
+        GITHUB_CREDENTIALS = credentials('github-cred')
+    }
+
     stages {
+        stage('Checkout SCM') {
+            steps {
+                echo 'Checking out the source code...'
+                checkout scm
+            }
+        }
+
         stage('Clone Project from GitHub') {
             steps {
-                checkout scm
+                echo 'Cloning the project from GitHub...'
+                git branch: 'main', url: 'https://github.com/Ahmed3019/final-project-digitalocean.git'
             }
         }
 
         stage('List Workspace Files') {
             steps {
                 script {
+                    echo 'Listing files in the workspace...'
                     sh 'ls -al'
                 }
             }
@@ -20,16 +34,11 @@ pipeline {
             steps {
                 dir('terraform') {
                     script {
-                        def output = sh(script: 'terraform output -json', returnStdout: true).trim()
-                        def infrastructureBuilt = sh(script: 'echo $output | jq .infrastructure_built', returnStdout: true).trim()
-
-                        if (infrastructureBuilt == "false") {
-                            echo "Infrastructure not built. Proceeding to build..."
-                            sh 'terraform init'
-                            sh 'terraform apply -auto-approve -var "digitalocean_token=${env.DIGITALOCEAN_TOKEN}"'
-                        } else {
-                            echo "Infrastructure already built. Skipping creation."
-                        }
+                        echo 'Checking if infrastructure is built...'
+                        sh '''
+                        terraform init
+                        terraform apply -auto-approve -var "digitalocean_token=${DIGITALOCEAN_TOKEN}"
+                        '''
                     }
                 }
             }
@@ -38,10 +47,23 @@ pipeline {
         stage('Generate IP and Update Inventory') {
             steps {
                 script {
-                    def ip = sh(script: 'terraform output -json | jq -r .droplet_ip.value', returnStdout: true).trim()
+                    echo 'Generating IP and updating inventory...'
+                    def ip = ""
+                    for (int i = 0; i < 5; i++) {
+                        ip = sh(script: 'terraform output -json | jq -r .droplet_ip.value', returnStdout: true).trim()
+                        if (ip != "null" && ip != "") {
+                            break
+                        }
+                        sleep(10)  // Wait for 10 seconds before retrying
+                    }
+                    if (ip == "null" || ip == "") {
+                        error("Droplet IP could not be retrieved. Exiting pipeline.")
+                    }
+
                     echo "Droplet IP: ${ip}"
 
-                   
+                    // Delete existing inventory file
+                    sh 'rm -f inventory.ini'
 
                     // Create new inventory file
                     writeFile file: 'inventory.ini', text: "[my_droplet]\n${ip}\n"
@@ -54,6 +76,7 @@ pipeline {
         stage('Run Ansible Playbook') {
             steps {
                 script {
+                    echo 'Running Ansible playbook...'
                     sh 'ansible-playbook -i inventory.ini setup.yaml'
                 }
             }
@@ -68,11 +91,6 @@ pipeline {
                 }
             }
         }
-    }
-
-    environment {
-        DIGITALOCEAN_TOKEN = credentials('digitalocean_token')
-        GITHUB_CREDENTIALS = credentials('github-cred')
     }
 
     post {
