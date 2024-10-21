@@ -1,92 +1,51 @@
 pipeline {
     agent any
-
     environment {
-        DIGITALOCEAN_TOKEN = credentials('digitalocean_token')  
-        INVENTORY_FILE = 'inventory.ini'  
-        ANSIBLE_PLAYBOOK ='setup.yaml'  
-        TERRAFORM_WORKDIR = 'terraform'  
+        GITHUB_REPO = 'https://github.com/Ahmed3019/final-project-digitalocean.git'
     }
-
     stages {
-        stage('Checkout Repository') {
+        stage('Clone Project') {
             steps {
-                git branch:'main', url: 'https://github.com/Ahmed3019/final-project-digitalocean.git'
+                git branch: 'main', url: "${GITHUB_REPO}", credentialsId: 'github-cred'
             }
         }
 
         stage('Check Infrastructure') {
             steps {
-                dir("${TERRAFORM_WORKDIR}") {
-                    sh 'terraform init'
+                dir('terraform') {
                     script {
-                        def infrastructureExists = sh(script: """
-                            terraform state list | grep -q "digitalocean_vpc.my_vpc" && 
-                            terraform state list | grep -q "digitalocean_droplet.my_instance" && 
-                            terraform state list | grep -q "digitalocean_firewall.my_firewall"
-                            echo \$?
-                        """, returnStdout: true).trim()
-                        if (infrastructureExists == "0") {
-                            echo 'Entire infrastructure exists. Skipping creation...'
-                            env.INFRASTRUCTURE_EXISTS = "false"
-                            // Extract IPs or any other needed info for existing infrastructure
-                            def instanceIp = sh(script: 'terraform output -raw instance_ip', returnStdout: true).trim()
-                            env.INSTANCE_IP = instanceIp
-                            echo 'Extracted Public IP: ${INSTANCE_IP}'
+                        def tfPlanOutput = sh(script: 'terraform plan -no-color', returnStdout: true)
+                        if (tfPlanOutput.contains("No changes. Infrastructure is up-to-date.")) {
+                            echo "Infrastructure is already built."
                         } else {
-                            echo 'Not all infrastructure exists. Creating/Updating...'
-                            env.INFRASTRUCTURE_EXISTS = "true"
+                            echo "Infrastructure needs to be built."
+                            sh 'terraform apply -auto-approve'
                         }
                     }
                 }
             }
         }
 
-        stage('Terraform Apply (If Necessary)') {
-            when {
-                expression { env.INFRASTRUCTURE_EXISTS == "true" }
-            }
+        stage('Capture Droplet IP') {
             steps {
-                dir("${TERRAFORM_WORKDIR}") {
-                    sh """
-                        terraform apply -auto-approve \
-                        -var "digitalocean_token=${DIGITALOCEAN_TOKEN}"
-                    """
+                dir('terraform') {
                     script {
-                        if (env.INFRASTRUCTURE_EXISTS == "true") {
-                            def instanceIp = sh(script: 'terraform output -raw instance_ip', returnStdout: true).trim()
-                            env.INSTANCE_IP = instanceIp
-                            echo "New Droplet Public IP: ${INSTANCE_IP}"
-                        }
+                        def dropletIp = sh(script: 'terraform output -raw public_ip', returnStdout: true).trim()
+                        echo "Droplet IP: ${dropletIp}"
+                        // Save the IP for future use
+                        writeFile file: 'droplet_ip.txt', text: dropletIp
                     }
                 }
-            }
-        }
-
-        stage('Generate/Update Inventory File') {
-            steps {
-                script {
-                    // Create or update the inventory file with the droplet IP
-                    writeFile(file: "${INVENTORY_FILE}", text: "[my_droplet]\n${INSTANCE_IP}\nansible_user=ubuntu\nansible_ssh_private_key_file=~/.ssh/your_ssh_key")
-                }
-            }
-        }
-
-        stage('Run Ansible Playbook') {
-            steps {
-                // Run the Ansible playbook
-                sh "ansible-playbook -i ${INVENTORY_FILE} ${ANSIBLE_PLAYBOOK}"
             }
         }
     }
 
     post {
         always {
-            echo 'Pipeline finished.'
-            echo "Inventory file ${INVENTORY_FILE} has been generated/updated and will be kept."
-        }
-        failure {
-            // Optional: Send notification on failure
+            script {
+                def dropletIp = readFile('droplet_ip.txt').trim()
+                echo "Pipeline completed. Droplet IP: ${dropletIp}"
+            }
         }
     }
 }
