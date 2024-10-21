@@ -1,50 +1,63 @@
 pipeline {
     agent any
 
-    environment {
-        DIGITALOCEAN_TOKEN = credentials('digitalocean_token')  // Use the DigitalOcean token credential
-        GITHUB_CREDENTIALS = credentials('github-cred')  // Use GitHub credentials
-    }
-
     stages {
-        stage('Clone GitHub Repo') {
+        stage('Clone Repository') {
             steps {
-                git branch: 'main', url: 'https://github.com/Ahmed3019/final-project-digitalocean.git', credentialsId: 'github-cred'
+                git credentialsId: 'github-cred', url: 'https://github.com/Ahmed3019/final-project-digitalocean.git'
             }
         }
 
-        stage('Run Terraform to Create Droplet') {
+        stage('Check Infrastructure') {
             steps {
-                dir('terraform') { // Change to the terraform directory
-                    script {
-                        sh 'terraform init' // Initialize Terraform
-                        def planOutput = sh(script: "terraform plan -out=tfplan -var=digitalocean_token=${DIGITALOCEAN_TOKEN} -no-color", returnStdout: true)
-                        echo "${planOutput}"
-                        // Apply the Terraform plan if there are changes
-                        sh 'terraform apply -auto-approve tfplan'
+                script {
+                    // Check if the droplet already exists
+                    def dropletCheck = sh(script: "doctl compute droplet list --format ID --no-header --region fra1", returnStdout: true).trim()
+                    
+                    if (dropletCheck) {
+                        echo 'Infrastructure already exists. Skipping creation.'
+                        env.INFRA_EXISTS = 'true'
+                    } else {
+                        echo 'Infrastructure does not exist. Proceeding with creation.'
+                        env.INFRA_EXISTS = 'false'
                     }
                 }
             }
         }
 
-        stage('Generate Inventory File') {
+        stage('Build Infrastructure') {
+            when {
+                expression { env.INFRA_EXISTS == 'false' }
+            }
             steps {
                 script {
-                    // Get the public IP of the created droplet
-                    def ipOutput = sh(script: 'terraform output -raw droplet_ip', returnStdout: true).trim()
-                    echo "Droplet IP: ${ipOutput}"
+                    // Run Terraform commands
+                    dir('terraform') {
+                        sh 'terraform init'
+                        sh 'terraform apply -auto-approve'
+                    }
+                }
+            }
+        }
 
-                    // Write the IP to the inventory.ini file
-                    writeFile file: 'inventory.ini', text: "[my_droplet]\n${ipOutput}\n"
+        stage('Generate Inventory') {
+            steps {
+                script {
+                    // Get the public IP of the droplet
+                    def dropletIP = sh(script: "doctl compute droplet list --format PublicIPv4 --no-header --region fra1", returnStdout: true).trim()
+                    
+                    // Create inventory.ini file
+                    writeFile file: 'inventory.ini', text: "[webserver]\n${dropletIP}\n"
+                    echo "Inventory file created with IP: ${dropletIP}"
                 }
             }
         }
 
         stage('Run Ansible Playbook') {
             steps {
-                dir('terraform') { // Change to the terraform directory
-                    // Run the Ansible playbook
-                    sh 'ansible-playbook -i ../inventory.ini setup.yaml'
+                script {
+                    // Run Ansible playbook
+                    sh 'ansible-playbook -i inventory.ini setup.yaml'
                 }
             }
         }
@@ -52,11 +65,11 @@ pipeline {
 
     post {
         always {
-            // Display the SSH command
             script {
-                def dropletIP = readFile('inventory.ini').trim().split('\n')[1] // Get the IP from inventory.ini
+                // Display the droplet IP and SSH command
+                def dropletIP = sh(script: "doctl compute droplet list --format PublicIPv4 --no-header --region fra1", returnStdout: true).trim()
                 echo "Droplet IP: ${dropletIP}"
-                echo "SSH Command: ssh root@${dropletIP} -i /path/to/your/private_key" // Update the path to your private key
+                echo "SSH Command: ssh -i ~/.ssh/my-key root@${dropletIP}"
             }
         }
     }
