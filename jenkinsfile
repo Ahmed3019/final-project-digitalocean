@@ -1,50 +1,53 @@
 pipeline {
     agent any
     environment {
-        GITHUB_REPO = 'https://github.com/Ahmed3019/final-project-digitalocean.git'
+        DIGITALOCEAN_TOKEN = credentials('digitalocean_token')  // Ensure this matches your Jenkins credential ID
     }
     stages {
         stage('Clone Project') {
             steps {
-                git branch: 'main', url: "${GITHUB_REPO}", credentialsId: 'github-cred'
+                git branch: 'main', url: 'https://github.com/Ahmed3019/final-project-digitalocean.git', credentialsId: 'github-cred'
             }
         }
-
         stage('Check Infrastructure') {
             steps {
                 dir('terraform') {
                     script {
-                        def tfPlanOutput = sh(script: 'terraform plan -no-color', returnStdout: true)
-                        if (tfPlanOutput.contains("No changes. Infrastructure is up-to-date.")) {
+                        // Check if the infrastructure is already created by checking the state file
+                        def terraformInit = sh(script: 'terraform init -no-color', returnStatus: true)
+                        def terraformPlan = sh(script: 'terraform plan -no-color -var "digitalocean_token=$DIGITALOCEAN_TOKEN"', returnStatus: true)
+                        
+                        if (terraformPlan == 0) {
                             echo "Infrastructure is already built."
                         } else {
-                            echo "Infrastructure needs to be built."
-                            sh 'terraform apply -auto-approve'
+                            echo "Infrastructure is not built yet, running terraform apply."
+                            sh 'terraform apply -auto-approve -no-color -var "digitalocean_token=$DIGITALOCEAN_TOKEN"'
                         }
                     }
                 }
             }
         }
-
         stage('Capture Droplet IP') {
             steps {
                 dir('terraform') {
                     script {
-                        def dropletIp = sh(script: 'terraform output -raw public_ip', returnStdout: true).trim()
-                        echo "Droplet IP: ${dropletIp}"
-                        // Save the IP for future use
-                        writeFile file: 'droplet_ip.txt', text: dropletIp
+                        def instance_ip = sh(script: 'terraform output instance_ip', returnStdout: true).trim()
+                        writeFile file: 'droplet_ip.txt', text: instance_ip
+                        echo "Droplet IP is: ${instance_ip}"
                     }
                 }
             }
         }
     }
-
     post {
         always {
             script {
-                def dropletIp = readFile('droplet_ip.txt').trim()
-                echo "Pipeline completed. Droplet IP: ${dropletIp}"
+                try {
+                    def droplet_ip = readFile('droplet_ip.txt').trim()
+                    echo "Droplet IP captured: ${droplet_ip}"
+                } catch (Exception e) {
+                    echo "Droplet IP could not be captured due to earlier failure."
+                }
             }
         }
     }
