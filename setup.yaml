@@ -1,58 +1,85 @@
 ---
-- hosts: droplet
-  become: yes
+- hosts: my_droplets
+  become: true
   tasks:
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+
+    - name: Install necessary packages
+      apt:
+        name:
+          - git
+          - ansible
+          - docker.io
+          - docker-compose
+          - openjdk-11-jdk
+          - curl
+          - conntrack
+          - apt-transport-https
+          - ca-certificates
+          - pkg-config
+          - golang
+          - build-essential
+        state: present
+
     - name: Create directory named "final project"
       file:
         path: /home/{{ ansible_user }}/final_project
         state: directory
-
-    - name: Install Git
-      apt:
-        name: git
-        state: present
-        update_cache: yes
-
-    - name: Install Ansible
-      apt:
-        name: ansible
-        state: present
-        update_cache: yes
 
     - name: Clone the repository
       git:
         repo: 'https://github.com/Ahmed3019/my-cv-application'
         dest: /home/{{ ansible_user }}/final_project/my-cv-application
 
-    - name: Install Docker
-      apt:
-        name: docker.io
-        state: present
-        update_cache: yes
+    - name: Download Minikube
+      get_url:
+        url: https://storage.googleapis.com/minikube/releases/latest/minikube-linux-amd64
+        dest: /usr/local/bin/minikube
+        mode: '0755'
 
-    - name: Install Docker Compose
-      apt:
-        name: docker-compose
-        state: present
-        update_cache: yes
+    - name: Download cri-dockerd
+      get_url:
+        url: https://github.com/Mirantis/cri-dockerd/archive/refs/tags/v0.2.5.tar.gz
+        dest: /tmp/cri-dockerd.tar.gz
 
-    - name: Add user to docker group
-      user:
-        name: "{{ ansible_user }}"
-        groups: docker
-        append: yes
+    - name: Extract cri-dockerd
+      unarchive:
+        src: /tmp/cri-dockerd.tar.gz
+        dest: /opt/
+        remote_src: yes
 
-    - name: Install Minikube
-      apt:
-        name: minikube
-        state: present
-        update_cache: yes
+    - name: Build cri-dockerd
+      command: make
+      args:
+        chdir: /opt/cri-dockerd-0.2.5
+      register: build_cri_dockerd
+      failed_when: build_cri_dockerd.rc != 0
 
-    - name: Install kubectl
-      apt:
-        name: kubectl
-        state: present
-        update_cache: yes
+    - name: Check if cri-dockerd binary exists
+      stat:
+        path: /opt/cri-dockerd-0.2.5/cri-dockerd
+      register: cri_dockerd_stat
+
+    - name: Install cri-dockerd if it exists
+      command: cp /opt/cri-dockerd-0.2.5/cri-dockerd /usr/local/bin/
+      when: cri_dockerd_stat.stat.exists
+
+    - name: Start cri-dockerd
+      command: nohup /usr/local/bin/cri-dockerd > /var/log/cri-dockerd.log 2>&1 &
+      when: cri_dockerd_stat.stat.exists
+
+    - name: Start Minikube
+      command: /usr/local/bin/minikube start --driver=none
+      register: minikube_start
+      failed_when: minikube_start.rc != 0
+      ignore_errors: yes
+
+    - name: Output Minikube start error
+      debug:
+        msg: "{{ minikube_start.stderr }}"
+      when: minikube_start.rc != 0
 
     - name: Pull the Docker image
       docker_image:
@@ -66,3 +93,29 @@
         state: started
         ports:
           - "80:80"
+
+    - name: Add Jenkins repository key
+      apt_key:
+        url: https://pkg.jenkins.io/debian/jenkins.io.key
+        state: present
+
+    - name: Add Jenkins repository
+      apt_repository:
+        repo: deb http://pkg.jenkins.io/debian-stable binary/
+        state: present
+
+    - name: Install Jenkins
+      apt:
+        name: jenkins
+        state: present
+
+    - name: Start Jenkins service
+      service:
+        name: jenkins
+        state: started
+        enabled: yes
+
+    - name: Open firewall for Jenkins (if UFW is used)
+      ufw:
+        rule: allow
+        name: 'Jenkins'
