@@ -15,28 +15,32 @@ pipeline {
             }
         }
 
-        stage('Check Infrastructure Existence') {
+        stage('Check Infrastructure') {
             steps {
                 dir("${TERRAFORM_WORKDIR}") {
                     sh 'terraform init'
-                    def infrastructureExists = sh(script: """
-                        terraform state list | grep -q "digitalocean_vpc.my_vpc" && 
-                        terraform state list | grep -q "digitalocean_droplet.my_instance" && 
-                        terraform state list | grep -q "digitalocean_firewall.my_firewall"
-                        echo \$?
-                    """, returnStdout: true).trim()
-                    if (infrastructureExists == "0") {
-                        echo 'Entire infrastructure exists. Skipping creation...'
-                        infrastructureCreation = false
-                        // Extract IPs or any other needed info for existing infrastructure
-                        def instanceIp = sh(script: 'terraform output -raw instance_ip', returnStdout: true).trim()
-                        env.INSTANCE_IP = instanceIp
-                        echo "Using existing Droplet Public IP: ${INSTANCE_IP}"
-                    } else {
-                        echo 'Not all infrastructure components exist. Creating/Updating...'
-                        infrastructureCreation = true
+                    step {
+                        def infrastructureExists = sh(script: """
+                            terraform state list | grep -q "digitalocean_vpc.my_vpc" && 
+                            terraform state list | grep -q "digitalocean_droplet.my_instance" && 
+                            terraform state list | grep -q "digitalocean_firewall.my_firewall"
+                            echo \$infrastructureExists
+                        """, returnStdout: true).trim()
                     }
-                    env.INFRASTRUCTURE_EXISTS = infrastructureCreation
+                    step {
+                        if (infrastructureExists == "0") {
+                            echo 'Entire infrastructure exists. Skipping creation...'
+                            infrastructureCreation = false
+                            // Extract IPs or any other needed info for existing infrastructure
+                            def instanceIp = sh(script: 'terraform output -raw instance_ip', returnStdout: true).trim()
+                            env.INSTANCE_IP = instanceIp
+                            echo 'Extracted Public IP: ${INSTANCE_IP}'
+                        } else {
+                            echo 'Not all infrastructure exists. Creating/Updating...'
+                            infrastructureCreation = true
+                            env.INFRASTRUCTURE_EXISTS = infrastructureCreation
+                        }
+                    }
                 }
             }
         }
@@ -51,11 +55,12 @@ pipeline {
                         terraform apply -auto-approve \
                         -var "digitalocean_token=${DIGITALOCEAN_TOKEN}"
                     """
-                    // Capture the output variable 'instance_ip' from Terraform for new infrastructure
-                    if (env.INFRASTRUCTURE_EXISTS == "true") {
-                        def instanceIp = sh(script: 'terraform output -raw instance_ip', returnStdout: true).trim()
-                        env.INSTANCE_IP = instanceIp
-                        echo "New Droplet Public IP: ${INSTANCE_IP}"
+                    step {
+                        if (env.INFRASTRUCTURE_EXISTS == "true") {
+                            def instanceIp = sh(script: 'terraform output -raw instance_ip', returnStdout: true).trim()
+                            env.INSTANCE_IP = instanceIp
+                            echo "New Droplet Public IP: ${INSTANCE_IP}"
+                        }
                     }
                 }
             }
@@ -63,9 +68,9 @@ pipeline {
 
         stage('Generate/Update Inventory File') {
             steps {
-                script {
+                step {
                     // Create or update the inventory file with the droplet IP
-                    writeFile(file: "${INVENTORY_FILE}", text: "[my_droplet]\n${INSTANCE_IP}\nansible_user=ubuntu\nansible_ssh_private_key_file=~/.ssh/your_ssh_key") 
+                    writeFile(file: "${INVENTORY_FILE}", text: "[my_droplet]\n${INSTANCE_IP}\nansible_user=ubuntu\nansible_ssh_private_key_file=~/.ssh/your_ssh_key")
                 }
             }
         }
@@ -80,11 +85,15 @@ pipeline {
 
     post {
         always {
-            echo 'Pipeline finished.'
-            echo "Inventory file ${INVENTORY_FILE} has been generated/updated and will be kept."
+            step {
+                echo 'Pipeline finished.'
+                echo "Inventory file ${INVENTORY_FILE} has been generated/updated and will be kept."
+            }
         }
         failure {
-            // Optional: Send notification on failure
+            step {
+                // Optional: Send notification on failure
+            }
         }
     }
 }
