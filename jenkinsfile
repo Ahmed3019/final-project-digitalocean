@@ -2,64 +2,74 @@ pipeline {
     agent any
 
     environment {
-        DIGITALOCEAN_TOKEN = credentials('digitalocean_token') // Add your credential here
+        GIT_REPO = "https://github.com/Ahmed3019/final-project-digitalocean.git" // GitHub repository URL
+        TERRAFORM_DIR = "terraform" // Directory for Terraform files
+        INVENTORY_FILE = "inventory.ini" // Ansible inventory file
+        DROPLET_PUBLIC_IP = '' // Initialize empty variable for droplet IP
+        DIGITALOCEAN_TOKEN = credentials('digitalocean_token') // DigitalOcean API Token from Jenkins credentials
     }
 
     stages {
-        stage('Clone Project from GitHub') {
-            steps {
-                git credentialsId: 'github-cred', url: 'https://github.com/Ahmed3019/final-project-digitalocean.git'
-            }
-        }
-
-        stage('Check if Infrastructure is Built') {
-            steps {
-                dir('terraform') {
-                    script {
-                        def isBuilt = sh(script: 'terraform output -json | jq .infrastructure_built', returnStdout: true).trim()
-                        if (isBuilt != 'true') {
-                            sh 'terraform init'
-                            sh 'terraform apply -auto-approve'
-                        } else {
-                            echo "Infrastructure already built. Skipping creation."
-                        }
-                    }
-                }
-            }
-        }
-
-        stage('Generate IP and Update Inventory') {
-            steps {
-                dir('terraform') {
-                    script {
-                        def dropletIP = sh(script: 'terraform output -json | jq -r .instance_ip.value', returnStdout: true).trim()
-                        if (dropletIP) {
-                            writeFile file: 'inventory.ini', text: "[droplet]\n${dropletIP} ansible_user=root"
-                            echo "Updated inventory file with droplet IP: ${dropletIP}"
-                        } else {
-                            error "Failed to retrieve droplet IP"
-                        }
-                    }
-                }
-            }
-        }
-
-        stage('Run Ansible Playbook') {
-            steps {
-                sh 'ansible-playbook -i inventory.ini setup.yaml'
-            }
-        }
-
-        stage('Display SSH Command') {
+        stage('Clone GitHub Repo') {
             steps {
                 script {
-                    def dropletIP = sh(script: 'terraform output -json | jq -r .instance_ip.value', returnStdout: true).trim()
-                    if (dropletIP) {
-                        echo "SSH Command to connect to the droplet: ssh -i /home/ahmed/.ssh/id_rsa root@${dropletIP}"
-                    } else {
-                        error "Droplet IP not found!"
+                    git branch: 'main', credentialsId: 'github-cred', url: "${GIT_REPO}"
+                }
+            }
+        }
+
+        stage('Run Terraform to Create Droplet') {
+            steps {
+                dir("${TERRAFORM_DIR}") {
+                    script {
+                        sh '''
+                            terraform init
+                            terraform plan -out=tfplan \
+                                -var="digitalocean_token=${DIGITALOCEAN_TOKEN}"
+
+                            # Check if there are changes to be applied
+                            if terraform show -json tfplan | jq .resource_changes | grep -q '"change"'; then
+                                echo "Changes detected, applying infrastructure changes..."
+                                terraform apply -auto-approve tfplan
+                            else
+                                echo "No changes to infrastructure, skipping apply."
+                            fi
+                        '''
+                        // Capture the public IP of the droplet
+                        DROPLET_PUBLIC_IP = sh(script: "terraform output -raw droplet_ip", returnStdout: true).trim()
+                        echo "Droplet Public IP: ${DROPLET_PUBLIC_IP}" // Log the captured IP for debugging
+                        
+                        // Create the Ansible inventory file in the Jenkins workspace
+                        writeFile file: "${env.WORKSPACE}/${INVENTORY_FILE}", text: "[frontend]\n${DROPLET_PUBLIC_IP} ansible_user=root ansible_ssh_private_key_file=./my-key"
+                        echo "Ansible inventory file created at: ${env.WORKSPACE}/${INVENTORY_FILE}"
                     }
                 }
+            }
+        }
+
+        stage('Setup Environment on Droplet using Ansible') {
+            steps {
+                script {
+                    // Ensure the SSH key has the correct permissions
+                    sh 'chmod 600 my-key'
+
+                    // Run the Ansible playbook from the local machine targeting the droplet
+                    sh '''
+                        ansible-playbook -i ${WORKSPACE}/${INVENTORY_FILE} setup_environment.yaml \
+                        --private-key ./my-key \
+                        -e "ansible_ssh_common_args='-o StrictHostKeyChecking=no'"
+                    '''
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            script {
+                def exposedPort = '8080' // Port you want to expose
+                def appUrl = "http://${DROPLET_PUBLIC_IP}:${exposedPort}"
+                echo "Pipeline finished. Droplet Public IP: ${DROPLET_PUBLIC_IP}, Exposed Port: ${exposedPort}, Application URL: ${appUrl}"
             }
         }
     }
