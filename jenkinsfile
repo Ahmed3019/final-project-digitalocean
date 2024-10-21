@@ -4,41 +4,61 @@ pipeline {
     environment {
         DIGITALOCEAN_TOKEN = credentials('digitalocean_token')  // Use Jenkins credentials for the token
         INVENTORY_FILE = 'inventory.ini'  // Define the inventory file name
+        ANSIBLE_PLAYBOOK ='setup.yaml'  // Your Ansible playbook file
+        TERRAFORM_WORKDIR = 'terraform'  // Directory containing your infra.tf file
     }
 
     stages {
         stage('Checkout Repository') {
             steps {
-                git branch: 'main', url: 'https://github.com/Ahmed3019/final-project-digitalocean.git'
+                git branch:'main', url: 'https://github.com/Ahmed3019/final-project-digitalocean.git'
             }
         }
 
-        stage('Check Infrastructure') {
+        stage('Check Infrastructure Existence') {
             steps {
-                script {
-                    // Check if the droplet exists
-                    def dropletExists = sh(script: "doctl compute droplet list --format ID --no-header", returnStdout: true).trim()
-
-                    if (dropletExists) {
-                        echo 'Droplet exists. Proceeding to run Ansible playbook...'
+                dir("${TERRAFORM_WORKDIR}") {
+                    sh 'terraform init'
+                    def dropletExists = sh(script: """
+                        terraform state list | grep digitalocean_droplet.my_instance
+                        echo \$?
+                    """, returnStdout: true).trim()
+                    if (dropletExists == "1") {
+                        echo 'Infrastructure does not exist. Creating...'
+                        infrastructureCreation = true
                     } else {
-                        echo 'Droplet does not exist. Running Terraform to create infrastructure...'
-                        // Run Terraform commands to initialize and apply
-                        sh 'terraform init'
-                        sh 'terraform apply -auto-approve'
+                        echo 'Infrastructure exists. Skipping creation...'
+                        infrastructureCreation = false
                     }
+                    env.INFRASTRUCTURE_EXISTS = infrastructureCreation
                 }
             }
         }
 
-        stage('Generate Inventory File') {
+        stage('Terraform Apply (If Necessary)') {
+            when {
+                expression { env.INFRASTRUCTURE_EXISTS == "true" }
+            }
+            steps {
+                dir("${TERRAFORM_WORKDIR}") {
+                    sh """
+                        terraform apply -auto-approve \
+                        -var "digitalocean_token=${DIGITALOCEAN_TOKEN}"
+                    """
+                    // Capture the output variable 'instance_ip' from Terraform
+                    def instanceIp = sh(script: 'terraform output -raw instance_ip', returnStdout: true).trim()
+                    env.INSTANCE_IP = instanceIp
+                    echo "Droplet Public IP: ${INSTANCE_IP}"
+                }
+            }
+        }
+
+        stage('Generate/Update Inventory File') {
             steps {
                 script {
-                    // Get the public IP of the droplet
-                    def dropletIP = sh(script: "doctl compute droplet list --format PublicIPv4 --no-header --region fra1", returnStdout: true).trim()
-
-                    // Create the inventory file with the droplet IP
-                    writeFile(file: "${INVENTORY_FILE}", text: "[my_droplet]\n${dropletIP}")
+                    // Create or update the inventory file with the droplet IP
+                    // If the file already exists, this will overwrite it
+                    writeFile(file: "${INVENTORY_FILE}", text: "[my_droplet]\n${INSTANCE_IP?: sh('terraform output -raw instance_ip', returnStdout: true).trim()}\nansible_user=ubuntu\nansible_ssh_private_key_file=~/.ssh/your_ssh_key") // Update ssh key file as necessary
                 }
             }
         }
@@ -46,7 +66,7 @@ pipeline {
         stage('Run Ansible Playbook') {
             steps {
                 // Run the Ansible playbook
-                sh 'ansible-playbook -i ${INVENTORY_FILE} setup.yaml'
+                sh "ansible-playbook -i ${INVENTORY_FILE} ${ANSIBLE_PLAYBOOK}"
             }
         }
     }
@@ -54,8 +74,15 @@ pipeline {
     post {
         always {
             echo 'Pipeline finished.'
-            // Clean up by removing the inventory file if necessary
-            sh "rm -f ${INVENTORY_FILE}"
+            // Inventory file is kept for potential future use
+            echo "Inventory file ${INVENTORY_FILE} has been generated/updated and will be kept."
+        }
+        failure {
+            // Optional: Send notification on failure, e.g., via email or Slack
+            // Example using mail:
+            // mail to: 'team@example.com',
+            //     subject: 'Failed Pipeline: Terraform & Ansible',
+            //     body: 'Pipeline failed. Please check the logs.'
         }
     }
 }
