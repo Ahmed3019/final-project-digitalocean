@@ -25,21 +25,33 @@ pipeline {
             }
         }
 
+        stage('List Workspace Files') {
+            steps {
+                script {
+                    // List files in the workspace for debugging
+                    sh 'ls -al'
+                }
+            }
+        }
+
         stage('Check if Infrastructure is Built') {
             steps {
                 script {
-                    // Run Terraform command to check if the infrastructure is already built
-                    def checkInfrastructure = sh(script: 'terraform output -json', returnStdout: true)
-                    def infrastructureStatus = sh(script: "echo '${checkInfrastructure}' | jq '.infrastructure_built'", returnStdout: true).trim()
+                    // Change to the directory where your Terraform files are located
+                    dir('terraform') { // Adjust this path if your Terraform files are in a different directory
+                        // Run Terraform command to check if the infrastructure is already built
+                        def checkInfrastructure = sh(script: 'terraform output -json', returnStdout: true)
+                        def infrastructureStatus = sh(script: "echo '${checkInfrastructure}' | jq '.infrastructure_built'", returnStdout: true).trim()
 
-                    if (infrastructureStatus == "true") {
-                        echo 'Infrastructure is already built. Skipping Terraform build.'
-                    } else {
-                        echo 'Infrastructure not built. Proceeding to build...'
-                        sh '''
-                            terraform init
-                            terraform apply -auto-approve
-                        '''
+                        if (infrastructureStatus == "true") {
+                            echo 'Infrastructure is already built. Skipping Terraform build.'
+                        } else {
+                            echo 'Infrastructure not built. Proceeding to build...'
+                            sh '''
+                                terraform init
+                                terraform apply -auto-approve
+                            '''
+                        }
                     }
                 }
             }
@@ -48,13 +60,15 @@ pipeline {
         stage('Generate IP and Update Inventory') {
             steps {
                 script {
-                    // Get the IP address of the created droplet
-                    def ipAddress = sh(script: 'terraform output -json | jq -r .droplet_ip.value', returnStdout: true).trim()
-                    echo "Droplet IP Address: ${ipAddress}"
+                    dir('terraform') { // Ensure we're in the correct directory for Terraform commands
+                        // Get the IP address of the created droplet
+                        def ipAddress = sh(script: 'terraform output -json | jq -r .droplet_ip.value', returnStdout: true).trim()
+                        echo "Droplet IP Address: ${ipAddress}"
 
-                    // Update the inventory file
-                    writeFile file: "${INVENTORY_FILE}", text: "[webserver]\n${ipAddress}\n"
-                    echo "Updated inventory file with the droplet IP."
+                        // Update the inventory file
+                        writeFile file: "${INVENTORY_FILE}", text: "[webserver]\n${ipAddress}\n"
+                        echo "Updated inventory file with the droplet IP."
+                    }
                 }
             }
         }
@@ -62,7 +76,6 @@ pipeline {
         stage('Run Ansible Playbook') {
             steps {
                 script {
-                    // Run the Ansible playbook using the updated inventory
                     sh "ansible-playbook -i ${INVENTORY_FILE} setup.yaml --private-key=${SSH_KEY}"
                 }
             }
